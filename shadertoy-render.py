@@ -7,7 +7,7 @@
 # Distributed under the (new) BSD License.
 
 # modified, 2018, Danil
-
+# modified, 2025, shenmi
 from __future__ import unicode_literals, print_function
 
 import argparse
@@ -38,13 +38,15 @@ from watchdog.events import FileSystemEventHandler
 ffmpeg_file="ffmpeg"
 
 if os.name == 'nt':
-    ffmpeg_file="C:/ffmpeg-2021-02-02-git-2367affc2c-full_build/bin/ffmpeg.exe"
+    ffmpeg_file="yourpath/bin/ffmpeg.exe"
     if(not os.path.exists(ffmpeg_file)):
+      print(os.getcwd())
       print("Error: file ffmpeg_file does not exist, edit line 41 of shadertoy-render.py")
       exit()
 
 max_iChannels=6 # equal iChannelXX
 max_iTextures=6 # equal iTextureXX
+
 
 try:
   import imageio as iio
@@ -100,6 +102,14 @@ uniform sampler2D iTexture2;             // input channel
 uniform sampler2D iTexture3;             // input channel
 uniform sampler2D iTexture4;             // input channel
 uniform sampler2D iTexture5;             // input channel
+
+uniform sampler3D iVolume0;              // 3D volume
+uniform sampler3D iVolume1;
+uniform sampler3D iVolume2;
+uniform sampler3D iVolume3;
+uniform sampler3D iVolume4;
+uniform sampler3D iVolume5;
+
 uniform vec3      iChannelResolution[6]; // channel resolution (in pixels)
 uniform vec3      iTextureResolution[6]; // channel resolution (in pixels)
 uniform float     iChannelTime[6];       // channel playback time (in sec)
@@ -268,6 +278,12 @@ class RenderingCanvas(app.Canvas):
             tfile_name = str(x)+'.png'
             if(os.path.exists(video_path_prefix+str(x))):
                 tfile_name = video_path_prefix+str(x)+os.sep+str(self._render_frame_index+1)+'.png'
+            else:
+                # add
+                if not os.path.exists(tfile_name):
+                    tfile_name_jpg = str(x)+'.jpg'
+                    if os.path.exists(tfile_name_jpg):
+                        tfile_name = tfile_name_jpg
             try:
                 try:
                   try:
@@ -282,7 +298,65 @@ class RenderingCanvas(app.Canvas):
             except FileNotFoundError:
                 self.set_texture_input(noise(resolution=2, nchannels=3), i=x)
                 self.set_Buf_texture_input(noise(resolution=2, nchannels=3), i=x)
-        
+        # ----------------- add 3D volume .bin -----------------
+        # add 1 channel or 4 channel
+        for x in range(0, max_iTextures):
+            vfile_name = str(x) + '.bin'
+            if not os.path.exists(vfile_name):
+                continue
+
+            data = numpy.fromfile(vfile_name, dtype=numpy.uint8)
+            n = data.size
+
+            if n == 0:
+                print("Warning: %s is empty, skip" % vfile_name)
+                continue
+
+            
+            best = None  # (waste_bytes, channels, side, used_count)
+            for channels in (4, 1):
+                voxels = n // channels
+                if voxels <= 0:
+                    continue
+
+                side = int(round(voxels ** (1.0 / 3.0)))
+                if side <= 0:
+                    continue
+
+                used = side * side * side * channels
+                if used > n:
+                    continue
+
+                waste = n - used 
+                if best is None or waste < best[0]:
+                    best = (waste, channels, side, used)
+
+            if best is None:
+                print("Warning: %s size does not fit 1ch or 4ch cube volume, skip" % vfile_name)
+                continue
+
+            waste, channels, side, used = best
+
+            if waste > 0:
+                print("Warning: %s has padding, trimming to %d^3 (%d channel%s)" %
+                      (vfile_name, side, channels, "" if channels == 1 else "s"))
+                data = data[:used]
+
+            print("Loaded volume", vfile_name, "-> side =", side, "channels =", channels)
+
+            if channels == 4:
+                vol = data.reshape((side, side, side, 4))
+            else:
+                gray = data.reshape((side, side, side, 1))
+                vol = numpy.concatenate(
+                    [gray, gray, gray, 255 * numpy.ones_like(gray)],
+                    axis=3
+                )
+
+            self.set_volume_input(vol, i=x)
+        # -------------------------------------------------------------
+
+
         self.set_channel_input()
         self.set_shader(glsl)
 
@@ -344,7 +418,9 @@ class RenderingCanvas(app.Canvas):
             self._BufX[i][uni] = val
         
     def set_Buf_texture_input(self, img, i=0, rep=True):
-        tex = gloo.Texture2D(img)
+        #tex = gloo.Texture2D(img)
+        tex = gloo.Texture2D(numpy.flipud(img))
+        
         tex.interpolation = 'linear'
         tex.wrapping = 'repeat' if rep else 'clamp_to_edge'
         for j in range(max_iChannels):
@@ -387,7 +463,19 @@ class RenderingCanvas(app.Canvas):
         tex.wrapping = 'repeat' if rep else 'clamp_to_edge'
         self.program['iTexture%d' % i] = tex
         self.program['iTextureResolution[%d]' % i] = img.shape
-        
+    def set_volume_input(self, vol, i=0, rep=True):
+        try:
+            tex = gloo.Texture3D(vol)
+        except ImportError as e:
+            print("Error: 3D texture requires PyOpenGL. Please install with:")
+            print("  pip install PyOpenGL PyOpenGL_accelerate")
+            print("Volume %d will be ignored." % i)
+            return
+
+        tex.interpolation = 'linear'
+        tex.wrapping = 'repeat' if rep else 'clamp_to_edge'
+        self.program['iVolume%d' % i] = tex
+     
     def set_channel_input(self):
         for i in range(max_iChannels):
             self.program['iChannel%d' % i] = self._texX[self._doubleFboid][i]
