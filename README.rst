@@ -229,3 +229,10 @@ Cut corners on image, with correct RGBA png color format:
 .. code-block:: bash
 
         convert '1.png' -colorspace sRGB -define png:format=png32 -define png:color-type=6 -gravity center -background transparent -extent 2048x2048 '1.png'
+
+
+-----------------
+2025
+add volume support use like under
+#define iChannel0 iVolume0
+
